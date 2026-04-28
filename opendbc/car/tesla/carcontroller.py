@@ -54,7 +54,7 @@ class CarController(CarControllerBase):
     self.set_hist = deque(maxlen=LONG_FUSION_SLOW_DROP_WIN)  # recent DAS_setSpeed (kph) for drop detection
     self.deleg_blend = 0.0      # 0=openpilot, 1=Tesla; ramps for smooth transition (snaps on collision)
     self.packer = CANPacker(dbc_names[Bus.party])
-    self.tesla_can = TeslaCAN(CP, self.packer)
+    self.tesla_can = TeslaCAN(self.packer)
 
     # Vehicle model used for lateral limiting
     self.VM = VehicleModel(get_safety_CP())
