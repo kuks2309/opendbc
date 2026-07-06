@@ -48,6 +48,44 @@ class TeslaCAN:
     }
     return self.packer.make_can_msg("DAS_control", CANBUS.party, values)
 
+  def create_longitudinal_passthrough(self, das_control, counter):
+    # Delegate longitudinal to Tesla: relay Tesla's own DAS_control command UNCHANGED (no blend),
+    # so the car does exactly what Tesla's TACC intends. accel bounds are clipped to openpilot's
+    # authority so panda safety accepts the message.
+    lo, hi = CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX
+    values = {
+      "DAS_setSpeed": das_control["DAS_setSpeed"],
+      "DAS_accState": das_control["DAS_accState"],
+      "DAS_aebEvent": das_control["DAS_aebEvent"],
+      "DAS_jerkMin": das_control["DAS_jerkMin"],
+      "DAS_jerkMax": das_control["DAS_jerkMax"],
+      "DAS_accelMin": max(lo, min(hi, das_control["DAS_accelMin"])),
+      "DAS_accelMax": max(lo, min(hi, das_control["DAS_accelMax"])),
+      "DAS_controlCounter": counter,
+    }
+    return self.packer.make_can_msg("DAS_control", CANBUS.party, values)
+
+  def create_longitudinal_blended(self, accel, v_ego, das_control, blend, counter):
+    # Smoothly transition between openpilot's command (blend=0) and Tesla's DAS_control (blend=1)
+    # to reduce jerk when there is time (TTC long). Used only during transitions; steady state is
+    # pure openpilot or pure Tesla passthrough.
+    lo, hi = CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX
+    b = min(max(blend, 0.0), 1.0)
+    op_set = min(max(v_ego + accel, 0) * CV.MS_TO_KPH, 400)
+    self.jerk = self.jerk + CarControllerParams.JERK_RATE_UP * DT_CTRL * 4
+    op_jmax = min(self.jerk, CarControllerParams.JERK_LIMIT_MAX)
+    values = {
+      "DAS_setSpeed": (1 - b) * op_set + b * das_control["DAS_setSpeed"],
+      "DAS_accState": 4,
+      "DAS_aebEvent": das_control["DAS_aebEvent"] if b > 0.5 else 0,
+      "DAS_jerkMin": (1 - b) * CarControllerParams.JERK_LIMIT_MIN + b * das_control["DAS_jerkMin"],
+      "DAS_jerkMax": (1 - b) * op_jmax + b * das_control["DAS_jerkMax"],
+      "DAS_accelMin": max(lo, min(hi, (1 - b) * accel + b * das_control["DAS_accelMin"])),
+      "DAS_accelMax": max(lo, min(hi, (1 - b) * max(accel, 0) + b * das_control["DAS_accelMax"])),
+      "DAS_controlCounter": counter,
+    }
+    return self.packer.make_can_msg("DAS_control", CANBUS.party, values)
+
   def create_steering_allowed(self):
     values = {
       "APS_eacAllow": 1,

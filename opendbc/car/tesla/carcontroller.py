@@ -7,6 +7,17 @@ from opendbc.car.tesla.teslacan import TeslaCAN
 from opendbc.car.tesla.values import CarControllerParams
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.sunnypilot.car.tesla.coop_steering import CoopSteeringCarController
+from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
+
+# Tesla ACC longitudinal fusion (experimental A/B) tuning
+DAS_ACC_ON = 4                        # DAS_accState enum value for ACC_ON
+LONG_FUSION_LEAD_HOLD = 25            # longitudinal ticks (~1s @25Hz) to keep delegating after lead flickers off
+# Emergency override: Tesla's accelMax is its MAX allowed accel; when it drops strongly negative Tesla is
+# FORCING a hard brake. Delegate to Tesla then even if openpilot missed the lead. (Needs field calibration
+# against a real Tesla hard brake; normal driving keeps accelMax > 0.)
+TESLA_EMERGENCY_ACCELMAX = -1.5       # m/s^2
+LONG_FUSION_BLEND_STEP = 0.04         # per longitudinal tick (~1s ramp @25Hz) for smooth transition
+LONG_FUSION_TTC_HARD = 4.0            # s; time-to-collision below this = collision expected -> hard switch (no ramp)
 
 
 def get_safety_CP():
@@ -21,6 +32,8 @@ class CarController(CarControllerBase):
     CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
     self.coop_steer = CoopSteeringCarController()
     self.apply_angle_last = 0
+    self.lead_hold_frames = 0   # hysteresis for Tesla long fusion lead gating
+    self.deleg_blend = 0.0      # 0=openpilot, 1=Tesla; ramps for smooth transition (snaps on collision)
     self.packer = CANPacker(dbc_names[Bus.party])
     self.tesla_can = TeslaCAN(CP, self.packer)
 
@@ -48,10 +61,52 @@ class CarController(CarControllerBase):
     # Longitudinal control
     if self.CP.openpilotLongitudinalControl:
       if self.frame % 4 == 0:
-        state = 13 if CC.cruiseControl.cancel else 4  # 4=ACC_ON, 13=ACC_CANCEL_GENERIC_SILENT
-        accel = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
         cntr = (self.frame // 4) % 8
-        can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.cruise_override))
+
+        # Tesla longitudinal delegation (A/B experimental option, toggle OFF => byte-identical stock behavior).
+        # When openpilot sees a lead (hudControl.leadVisible = the on-screen lead chevron), hand longitudinal
+        # to Tesla by relaying Tesla's own DAS_control command UNCHANGED (a clean switch/pass-through, NOT a
+        # blend). Otherwise openpilot controls. A short hold rides out lead-detection flicker.
+        delegate = False
+        collision_soon = False
+        if self.CP_SP.flags & TeslaFlagsSP.TESLA_LONG_FUSION.value:
+          if CC.hudControl.leadVisible:
+            self.lead_hold_frames = LONG_FUSION_LEAD_HOLD
+          elif self.lead_hold_frames > 0:
+            self.lead_hold_frames -= 1
+          lead_present = CC.hudControl.leadVisible or self.lead_hold_frames > 0
+          tesla_ok = CS.das_control is not None and CS.das_control["DAS_accState"] == DAS_ACC_ON
+          # #5 Emergency override: Tesla FORCING a hard brake (accelMax < threshold) delegates even if
+          # openpilot did not see the lead -- catches leads openpilot's vision misses (7/5 incident).
+          tesla_emergency = tesla_ok and CS.das_control["DAS_accelMax"] < TESLA_EMERGENCY_ACCELMAX
+          # #3 Lane change (openpilot auto lane change sets these blinkers): openpilot keeps longitudinal,
+          # but a Tesla emergency brake still overrides.
+          lane_changing = CC.leftBlinker or CC.rightBlinker
+          delegate = (CC.longActive and not CC.cruiseControl.cancel and tesla_ok and
+                      ((lead_present and not lane_changing) or tesla_emergency))
+          # Collision expected: short time-to-collision to the lead (dRel/closing) or Tesla emergency.
+          lead = CC_SP.leadOne
+          closing = -lead.vRel
+          ttc = (lead.dRel / closing) if (lead.status and closing > 0.5) else 1e3
+          collision_soon = tesla_emergency or ttc < LONG_FUSION_TTC_HARD
+
+        # Ramp the blend toward the delegate target to reduce jerk; snap to full on collision (hard switch).
+        if delegate and collision_soon:
+          self.deleg_blend = 1.0
+        elif delegate:
+          self.deleg_blend = min(1.0, self.deleg_blend + LONG_FUSION_BLEND_STEP)
+        else:
+          self.deleg_blend = max(0.0, self.deleg_blend - LONG_FUSION_BLEND_STEP)
+
+        use_tesla = self.deleg_blend > 0.001 and CS.das_control is not None
+        accel = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
+        if use_tesla and self.deleg_blend >= 0.999:                 # #2 pure Tesla pass-through
+          can_sends.append(self.tesla_can.create_longitudinal_passthrough(CS.das_control, cntr))
+        elif use_tesla:                                             # transition: smooth blend
+          can_sends.append(self.tesla_can.create_longitudinal_blended(accel, CS.out.vEgo, CS.das_control, self.deleg_blend, cntr))
+        else:                                                       # #1/#4 openpilot
+          state = 13 if CC.cruiseControl.cancel else 4  # 4=ACC_ON, 13=ACC_CANCEL_GENERIC_SILENT
+          can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.cruise_override))
 
     else:
       # Increment counter so cancel is prioritized even without openpilot longitudinal
