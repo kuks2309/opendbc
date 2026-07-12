@@ -6,13 +6,11 @@ See the LICENSE.md file in the root directory for more details.
 """
 from enum import StrEnum
 
-from opendbc.car import Bus, create_button_events, structs
+from opendbc.car import Bus, structs
 from opendbc.can.parser import CANParser
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.tesla.values import DBC, CANBUS
 from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
-
-ButtonType = structs.CarState.ButtonEvent.Type
 
 
 class CarStateExt:
@@ -20,17 +18,12 @@ class CarStateExt:
     self.CP = CP
     self.CP_SP = CP_SP
 
-    self.infotainment_3_finger_press = 0
-
   def update(self, ret: structs.CarState, ret_sp: structs.CarStateSP, can_parsers: dict[StrEnum, CANParser]) -> None:
-    if self.CP_SP.flags & TeslaFlagsSP.HAS_VEHICLE_BUS:
-      cp_adas = can_parsers[Bus.adas]
-
-      prev_infotainment_3_finger_press = self.infotainment_3_finger_press
-      self.infotainment_3_finger_press = int(cp_adas.vl["UI_status2"]["UI_activeTouchPoints"])
-
-      ret.buttonEvents = [*create_button_events(self.infotainment_3_finger_press, prev_infotainment_3_finger_press,
-                                                {3: ButtonType.lkas})]
+    # DISABLED (kuksauto): 3-finger infotainment-touch -> LKAS/MADS lateral toggle.
+    # Tesla's UI_status2.UI_activeTouchPoints can momentarily read 3 on phantom / palm /
+    # wet touches, spuriously toggling lateral engagement (engage-then-disengage).
+    # Removed to prevent unintended engage/disengage from touchscreen noise.
+    # Original: UI_activeTouchPoints == 3 produced a ButtonType.lkas button event.
 
     cp_party = can_parsers[Bus.party]
     cp_ap_party = can_parsers[Bus.ap_party]
