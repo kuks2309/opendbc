@@ -22,8 +22,14 @@ class CarStateExt:
     # DISABLED (kuksauto): 3-finger infotainment-touch -> LKAS/MADS lateral toggle.
     # Tesla's UI_status2.UI_activeTouchPoints can momentarily read 3 on phantom / palm /
     # wet touches, spuriously toggling lateral engagement (engage-then-disengage).
-    # Removed to prevent unintended engage/disengage from touchscreen noise.
-    # Original: UI_activeTouchPoints == 3 produced a ButtonType.lkas button event.
+    #
+    # We still force ret.buttonEvents = [] on the vehicle-bus Tesla, exactly as the original
+    # code did implicitly by overwriting buttonEvents with the touch events. The base carstate
+    # populates buttonEvents with cancel/unknown from DAS_accState; letting those flow through
+    # here caused a cruise fault (DI_cruiseState -> FAULT, "restart the car to engage") on
+    # steering-override disengage. Keeping the overwrite preserves the original behavior.
+    if self.CP_SP.flags & TeslaFlagsSP.HAS_VEHICLE_BUS:
+      ret.buttonEvents = []
 
     cp_party = can_parsers[Bus.party]
     cp_ap_party = can_parsers[Bus.ap_party]
