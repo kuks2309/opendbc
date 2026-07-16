@@ -100,13 +100,20 @@ class CarController(CarControllerBase):
 
         use_tesla = self.deleg_blend > 0.001 and CS.das_control is not None
         accel = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
-        if use_tesla and self.deleg_blend >= 0.999:                 # #2 pure Tesla pass-through
+        if CC.cruiseControl.cancel:                                 # cancel outranks delegation
+          # The cancel edge lives only ~0.4s. deleg_blend ramps down over more frames than that, so
+          # while it is still > 0 we would stay in the pass-through/blend branches below -- neither of
+          # which emits the cancel -- and Tesla's ACC stays engaged after openpilot drops out, which
+          # faults the DI (cruise fault, restart required) on steering-override disengage. Snap out of
+          # delegation and send the cancel on the same frame it is requested.
+          self.deleg_blend = 0.0
+          can_sends.append(self.tesla_can.create_longitudinal_command(13, accel, cntr, CS.out.vEgo, CC.longActive, CS.cruise_override))
+        elif use_tesla and self.deleg_blend >= 0.999:               # #2 pure Tesla pass-through
           can_sends.append(self.tesla_can.create_longitudinal_passthrough(CS.das_control, cntr))
         elif use_tesla:                                             # transition: smooth blend
           can_sends.append(self.tesla_can.create_longitudinal_blended(accel, CS.out.vEgo, CS.das_control, self.deleg_blend, cntr))
         else:                                                       # #1/#4 openpilot
-          state = 13 if CC.cruiseControl.cancel else 4  # 4=ACC_ON, 13=ACC_CANCEL_GENERIC_SILENT
-          can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.cruise_override))
+          can_sends.append(self.tesla_can.create_longitudinal_command(4, accel, cntr, CS.out.vEgo, CC.longActive, CS.cruise_override))  # 4=ACC_ON
 
     else:
       # Increment counter so cancel is prioritized even without openpilot longitudinal
