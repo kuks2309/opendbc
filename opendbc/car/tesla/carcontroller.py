@@ -30,6 +30,9 @@ LONG_FUSION_SLOW_DROP_KPH = 5.0       # kph; setSpeed must have fallen this much
 LONG_FUSION_SLOW_DROP_WIN = 50        # longitudinal ticks (~2s @25Hz) drop-detection window
 LONG_FUSION_SLOW_VMIN = 11.0          # m/s (~40 km/h); below this keep openpilot (city stop-and-go noise)
 LONG_FUSION_SLOW_HOLD = 25            # longitudinal ticks (~1s @25Hz) to ride out setSpeed jitter
+LONG_FUSION_SLOW_SET_MAX = 400.0      # kph; DAS_setSpeed SNA is 409.5 -- one poisoned sample would false-arm
+LONG_FUSION_SLOW_MAX_LATCH = 750      # longitudinal ticks (~30s); without fresh drop evidence the latch expires
+                                      # so the static highway setSpeed deficit cannot hold delegation forever
 
 
 def get_safety_CP():
@@ -47,6 +50,7 @@ class CarController(CarControllerBase):
     self.lead_hold_frames = 0   # hysteresis for Tesla long fusion lead gating
     self.slow_hold_frames = 0   # hysteresis for Tesla curve-assist (setSpeed deficit) gating
     self.slow_latched = False   # curve-assist gate latch (armed by rapid setSpeed drop)
+    self.slow_latch_age = 0     # ticks since last fresh drop evidence; expires the latch
     self.set_hist = deque(maxlen=LONG_FUSION_SLOW_DROP_WIN)  # recent DAS_setSpeed (kph) for drop detection
     self.deleg_blend = 0.0      # 0=openpilot, 1=Tesla; ramps for smooth transition (snaps on collision)
     self.packer = CANPacker(dbc_names[Bus.party])
@@ -98,17 +102,21 @@ class CarController(CarControllerBase):
           # speed ahead of the corner). Delegate so Tesla's own curve deceleration executes -- vision
           # alone sees the curve too late (user report 7/18). Armed only by a rapid recent drop,
           # latched while the deficit persists, released once setSpeed recovers near vEgo.
-          if tesla_ok:
+          if tesla_ok and self.CP_SP.flags & TeslaFlagsSP.TESLA_CURVE_SLOW.value:
             das_set = CS.das_control["DAS_setSpeed"]
-            self.set_hist.append(das_set)
-            at_speed = CS.out.vEgo > LONG_FUSION_SLOW_VMIN
-            recent_drop = (max(self.set_hist) - das_set) >= LONG_FUSION_SLOW_DROP_KPH
-            deficit = at_speed and das_set / 3.6 < CS.out.vEgo - LONG_FUSION_SLOW_MARGIN
-            staying = at_speed and das_set / 3.6 < CS.out.vEgo - LONG_FUSION_SLOW_STAY
-            if deficit and recent_drop:
-              self.slow_latched = True
-            if not staying:
-              self.slow_latched = False
+            if das_set < LONG_FUSION_SLOW_SET_MAX:  # skip SNA/implausible frames, keep latch state
+              self.set_hist.append(das_set)
+              at_speed = CS.out.vEgo > LONG_FUSION_SLOW_VMIN
+              recent_drop = (max(self.set_hist) - das_set) >= LONG_FUSION_SLOW_DROP_KPH
+              deficit = at_speed and das_set / 3.6 < CS.out.vEgo - LONG_FUSION_SLOW_MARGIN
+              staying = at_speed and das_set / 3.6 < CS.out.vEgo - LONG_FUSION_SLOW_STAY
+              if deficit and recent_drop:
+                self.slow_latched = True
+                self.slow_latch_age = 0         # fresh drop evidence extends the latch
+              if self.slow_latched:
+                self.slow_latch_age += 1
+                if not staying or self.slow_latch_age > LONG_FUSION_SLOW_MAX_LATCH:
+                  self.slow_latched = False
           else:
             self.set_hist.clear()
             self.slow_latched = False

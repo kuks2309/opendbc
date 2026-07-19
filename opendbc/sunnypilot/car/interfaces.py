@@ -119,6 +119,9 @@ def _initialize_tesla_long_fusion(CP: structs.CarParams, CP_SP: structs.CarParam
     long_fusion = int(params_dict.get("TeslaLongitudinalFusion", 0)) == 1
     if long_fusion:
       CP_SP.flags |= TeslaFlagsSP.TESLA_LONG_FUSION.value
+    curve_slow = int(params_dict.get("TeslaCurveAssistDelegation", 0)) == 1
+    if curve_slow:
+      CP_SP.flags |= TeslaFlagsSP.TESLA_CURVE_SLOW.value
 
 
 def _initialize_radar_tracks(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
