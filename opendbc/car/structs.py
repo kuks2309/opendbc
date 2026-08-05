@@ -148,6 +148,7 @@ class CarControlSP:
   leadOne: 'LeadData' = field(default_factory=lambda: LeadData())
   leadTwo: 'LeadData' = field(default_factory=lambda: LeadData())
   intelligentCruiseButtonManagement: 'IntelligentCruiseButtonManagement' = field(default_factory=lambda: IntelligentCruiseButtonManagement())
+  tFollow: float = auto_field()  # planner following time gap (s); 0.0 = not provided (older publisher)
 
   @auto_dataclass
   class Param:

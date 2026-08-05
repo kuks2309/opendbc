@@ -13,6 +13,9 @@ from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 # Tesla ACC longitudinal fusion (experimental A/B) tuning
 DAS_ACC_ON = 4                        # DAS_accState enum value for ACC_ON
 LONG_FUSION_LEAD_HOLD = 25            # longitudinal ticks (~1s @25Hz) to keep delegating after lead flickers off
+LONG_FUSION_LEAD_PERSIST = 13         # longitudinal ticks (~0.5s @25Hz) of continuous chevron to arm delegation
+LONG_FUSION_LEAD_GAP_MARGIN = 0.5     # s added to the user's T_FOLLOW gap for the lead-relevance distance gate
+LONG_FUSION_LEAD_MIN_DIST = 25.0      # m floor for the distance gate at low speed
 # Emergency override: Tesla's accelMax is its MAX allowed accel; when it drops strongly negative Tesla is
 # FORCING a hard brake. Delegate to Tesla then even if openpilot missed the lead. (Needs field calibration
 # against a real Tesla hard brake; normal driving keeps accelMax > 0.)
@@ -48,6 +51,7 @@ class CarController(CarControllerBase):
     self.coop_steer = CoopSteeringCarController()
     self.apply_angle_last = 0
     self.lead_hold_frames = 0   # hysteresis for Tesla long fusion lead gating
+    self.lv_streak = 0          # consecutive ticks with the lead chevron on (delegation arm persistence)
     self.slow_hold_frames = 0   # hysteresis for Tesla curve-assist (setSpeed deficit) gating
     self.slow_latched = False   # curve-assist gate latch (armed by rapid setSpeed drop)
     self.slow_latch_age = 0     # ticks since last fresh drop evidence; expires the latch
@@ -83,17 +87,31 @@ class CarController(CarControllerBase):
         cntr = (self.frame // 4) % 8
 
         # Tesla longitudinal delegation (A/B experimental option, toggle OFF => byte-identical stock behavior).
-        # When openpilot sees a lead (hudControl.leadVisible = the on-screen lead chevron), hand longitudinal
-        # to Tesla by relaying Tesla's own DAS_control command UNCHANGED (a clean switch/pass-through, NOT a
-        # blend). Otherwise openpilot controls. A short hold rides out lead-detection flicker.
+        # When openpilot is FOLLOWING a lead, hand longitudinal to Tesla by relaying Tesla's own DAS_control
+        # command UNCHANGED (a clean switch/pass-through, NOT a blend). Otherwise openpilot controls.
+        # "Following" = the on-screen lead chevron held >=0.5s AND the lead within the user's following
+        # gap (T_FOLLOW personality setting) + 0.5s margin. A bare chevron was not enough: accurate but
+        # DISTANT leads (50-110m, gap 1.8-3.8s) kept delegation engaged while cruising, and Tesla's
+        # adjacent-vehicle caution then dragged the speed down a few kph on straights -- the phantom-brake
+        # feeling reported 8/2-8/5. A far lead is openpilot's business; Tesla takes over when we actually
+        # close to following range. A short hold still rides out lead-detection flicker.
         delegate = False
         collision_soon = False
         if self.CP_SP.flags & TeslaFlagsSP.TESLA_LONG_FUSION.value:
+          lead = CC_SP.leadOne
           if CC.hudControl.leadVisible:
+            self.lv_streak += 1
+          else:
+            self.lv_streak = 0
+          t_gap = CC_SP.tFollow if CC_SP.tFollow > 0.1 else 1.45  # fallback: standard personality
+          lead_near = lead.status and lead.dRel < max(LONG_FUSION_LEAD_MIN_DIST,
+                                                      CS.out.vEgo * (t_gap + LONG_FUSION_LEAD_GAP_MARGIN))
+          lead_follow = self.lv_streak >= LONG_FUSION_LEAD_PERSIST and lead_near
+          if lead_follow:
             self.lead_hold_frames = LONG_FUSION_LEAD_HOLD
           elif self.lead_hold_frames > 0:
             self.lead_hold_frames -= 1
-          lead_present = CC.hudControl.leadVisible or self.lead_hold_frames > 0
+          lead_present = lead_follow or self.lead_hold_frames > 0
           tesla_ok = CS.das_control is not None and CS.das_control["DAS_accState"] == DAS_ACC_ON
           # #5 Emergency override: Tesla FORCING a hard brake (accelMax < threshold) delegates even if
           # openpilot did not see the lead -- catches leads openpilot's vision misses (7/5 incident).
@@ -131,7 +149,6 @@ class CarController(CarControllerBase):
           delegate = (CC.longActive and not CC.cruiseControl.cancel and tesla_ok and
                       (((lead_present or tesla_slow) and not lane_changing) or tesla_emergency))
           # Collision expected: short time-to-collision to the lead (dRel/closing) or Tesla emergency.
-          lead = CC_SP.leadOne
           closing = -lead.vRel
           ttc = (lead.dRel / closing) if (lead.status and closing > 0.5) else 1e3
           collision_soon = tesla_emergency or ttc < LONG_FUSION_TTC_HARD
