@@ -149,6 +149,9 @@ class CarState(CarStateBase, CarStateExt):
 
     # Messages needed by carcontroller
     self.das_control = copy.copy(cp_ap_party.vl["DAS_control"])
+    # Tesla APS dynamic target speed for TeslaSpeedSync (kph); 0 when ACC off or SNA(409.5)
+    if self.das_control["DAS_accState"] == 4 and self.das_control["DAS_setSpeed"] < 400.0:
+      ret_sp.teslaAccSetSpeed = float(self.das_control["DAS_setSpeed"])
 
     CarStateExt.update(self, ret, ret_sp, can_parsers)
 

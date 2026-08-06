@@ -171,3 +171,4 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
+  teslaAccSetSpeed: float = auto_field()  # Tesla APS dynamic target (kph); 0 = invalid/unavailable
