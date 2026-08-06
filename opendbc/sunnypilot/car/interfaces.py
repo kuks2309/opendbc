@@ -85,6 +85,7 @@ def setup_interfaces(CI, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
 
   _initialize_custom_longitudinal_tuning(CI, CP, CP_SP, params_dict)
   _initialize_coop_steering(CP, CP_SP, params_dict)
+  _initialize_tesla_long_fusion(CP, CP_SP, params_dict)
   _initialize_radar_tracks(CP, CP_SP, can_recv, can_send)
   _initialize_stop_and_go(CP, CP_SP, params_dict)
   _initialize_toyota(CP, CP_SP, params_dict)
@@ -110,6 +111,17 @@ def _initialize_coop_steering(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
     coop_steering = int(params_dict.get("TeslaCoopSteering", 0)) == 1
     if coop_steering:
       CP_SP.flags |= TeslaFlagsSP.COOP_STEERING.value
+
+
+def _initialize_tesla_long_fusion(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
+                                  params_dict: dict[str, str]) -> None:
+  if CP.brand == 'tesla':
+    long_fusion = int(params_dict.get("TeslaLongitudinalFusion", 0)) == 1
+    if long_fusion:
+      CP_SP.flags |= TeslaFlagsSP.TESLA_LONG_FUSION.value
+    curve_slow = int(params_dict.get("TeslaCurveAssistDelegation", 0)) == 1
+    if curve_slow:
+      CP_SP.flags |= TeslaFlagsSP.TESLA_CURVE_SLOW.value
 
 
 def _initialize_radar_tracks(CP: structs.CarParams, CP_SP: structs.CarParamsSP,
