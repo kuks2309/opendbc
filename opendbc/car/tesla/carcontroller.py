@@ -190,6 +190,7 @@ class CarController(CarControllerBase):
     new_actuators.accel = self.coop_steer.coop_apply_angle_sat_last # debug
     new_actuators.curvature = float(self.coop_steer.debug_angle_desired_limited) # debug
     new_actuators.torque = float(self.coop_steer.angle_override) # debug
+    new_actuators.speed = float(self.deleg_blend)  # debug: longitudinal delegation state (0=op, 1=Tesla) -> HUD + rlog
 
     self.frame += 1
     return new_actuators, can_sends
